@@ -52,9 +52,25 @@ import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsag
 
 // ---- Shared helpers ----
 
+/** Metadata attached to get_subagent_result tool results for custom rendering. */
+interface SubagentResultDetails {
+  agentId: string;
+  displayName: string;
+  description: string;
+  status: AgentRecord["status"];
+  toolUses: number;
+  tokens: string;
+  contextPercent: number | null;
+  compactionCount: number;
+  duration: string;
+  error?: string;
+}
+
+type ToolResultDetails = AgentDetails | SubagentResultDetails;
+
 /** Tool execute return value for a text response. */
-function textResult(msg: string, details?: AgentDetails) {
-  return { content: [{ type: "text" as const, text: msg }], details: details as any };
+function textResult(msg: string, details?: ToolResultDetails) {
+  return { content: [{ type: "text" as const, text: msg }], details: details as unknown };
 }
 
 export function renderRunningAgentStatus(
@@ -131,6 +147,47 @@ function getStatusLabel(status: string, error?: string): string {
     case "stopped": return "Stopped";
     default: return "Done";
   }
+}
+
+/** Human-readable status label for compact get_subagent_result rendering. */
+function getSubagentResultStatusLabel(status: AgentRecord["status"], error?: string): string {
+  switch (status) {
+    case "queued": return "Queued";
+    case "running": return "Running";
+    case "completed": return "Done";
+    case "steered": return "Wrapped up (turn limit)";
+    case "stopped": return "Stopped";
+    case "aborted": return "Aborted (max turns exceeded)";
+    case "error": return `Error: ${error ?? "unknown"}`;
+  }
+}
+
+/** Icon for compact get_subagent_result rendering. */
+function getSubagentResultIcon(status: AgentRecord["status"], theme: Pick<Theme, "fg">): string {
+  switch (status) {
+    case "queued": return theme.fg("muted", "◦");
+    case "running": return theme.fg("accent", "⠋");
+    case "completed": return theme.fg("success", "✓");
+    case "steered": return theme.fg("warning", "✓");
+    case "stopped": return theme.fg("dim", "■");
+    case "aborted":
+    case "error": return theme.fg("error", "✗");
+  }
+}
+
+/** Compact renderer text for get_subagent_result while preserving full result content for expansion. */
+function renderSubagentResultSummary(details: SubagentResultDetails, theme: Theme): string {
+  const parts = [`${details.toolUses} tool use${details.toolUses === 1 ? "" : "s"}`];
+  if (details.tokens) parts.push(details.tokens);
+  if (details.contextPercent !== null) parts.push(`context ${Math.round(details.contextPercent)}%`);
+  if (details.compactionCount) parts.push(`⇊${details.compactionCount}`);
+  parts.push(details.duration);
+
+  const statusLabel = getSubagentResultStatusLabel(details.status, details.error);
+  const icon = getSubagentResultIcon(details.status, theme);
+  const stats = parts.map(p => theme.fg("dim", p)).join(" " + theme.fg("dim", "·") + " ");
+  const heading = `${icon} ${theme.bold(details.displayName)} ${theme.fg("dim", statusLabel)} ${theme.fg("dim", "·")} ${stats}`;
+  return `${heading}\n${theme.fg("dim", `  ⎿  ${details.description}`)}`;
 }
 
 /** Escape XML special characters to prevent injection in structured notifications. */
@@ -1352,6 +1409,15 @@ Terse command-style prompts produce shallow, generic work.
         }),
       ),
     }),
+    renderResult(result, { expanded }, theme) {
+      const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+      if (expanded) return new Text(text, 0, 0);
+
+      const details = result.details as SubagentResultDetails | undefined;
+      if (!details) return new Text(text, 0, 0);
+
+      return new Text(renderSubagentResultSummary(details, theme), 0, 0);
+    },
     execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
       const record = manager.getRecord(params.agent_id);
       if (!record) {
@@ -1405,7 +1471,18 @@ Terse command-style prompts produce shallow, generic work.
         }
       }
 
-      return textResult(output);
+      return textResult(output, {
+        agentId: record.id,
+        displayName,
+        description: record.description,
+        status: record.status,
+        toolUses: record.toolUses,
+        tokens,
+        contextPercent,
+        compactionCount: record.compactionCount,
+        duration,
+        error: record.error,
+      });
     },
   }));
 

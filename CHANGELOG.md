@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`get_subagent_result` now renders compactly in the main chat.** The tool still returns the complete background-agent result text to the model, including verbose conversation output when requested, but Pi's collapsed tool view now shows only a status summary and expands through the normal tool-result disclosure to reveal the full payload.
+
 ## [0.13.0] - 2026-06-30
 
 ### Added
