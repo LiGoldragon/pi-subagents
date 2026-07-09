@@ -83,6 +83,8 @@ export interface AgentRecord {
   status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error";
   result?: string;
   error?: string;
+  terminalStopReason?: string;
+  terminalErrorMessage?: string;
   toolUses: number;
   startedAt: number;
   completedAt?: number;

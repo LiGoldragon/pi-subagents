@@ -142,7 +142,7 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 function getStatusLabel(status: string, error?: string): string {
   switch (status) {
     case "error": return `Error: ${error ?? "unknown"}`;
-    case "aborted": return "Aborted (max turns exceeded)";
+    case "aborted": return error ? `Aborted: ${error}` : "Aborted (max turns exceeded)";
     case "steered": return "Wrapped up (turn limit)";
     case "stopped": return "Stopped";
     default: return "Done";
@@ -157,7 +157,7 @@ function getSubagentResultStatusLabel(status: AgentRecord["status"], error?: str
     case "completed": return "Done";
     case "steered": return "Wrapped up (turn limit)";
     case "stopped": return "Stopped";
-    case "aborted": return "Aborted (max turns exceeded)";
+    case "aborted": return error ? `Aborted: ${error}` : "Aborted (max turns exceeded)";
     case "error": return `Error: ${error ?? "unknown"}`;
   }
 }
@@ -208,7 +208,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
     ? record.result.length > resultMaxLen
       ? record.result.slice(0, resultMaxLen) + "\n...(truncated, use get_subagent_result for full output)"
       : record.result
-    : "No output.";
+    : record.error ?? "No output.";
 
   return [
     `<task-notification>`,
@@ -216,7 +216,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
     record.toolCallId ? `<tool-use-id>${escapeXml(record.toolCallId)}</tool-use-id>` : null,
     record.outputFile ? `<output-file>${escapeXml(record.outputFile)}</output-file>` : null,
     `<status>${escapeXml(status)}</status>`,
-    `<summary>Agent "${escapeXml(record.description)}" ${record.status}${getStatusNote(record.status)}</summary>`,
+    `<summary>Agent "${escapeXml(record.description)}" ${record.status}${getStatusNote(record.status, record.error)}</summary>`,
     `<result>${escapeXml(resultPreview)}</result>`,
     `<usage><total_tokens>${totalTokens}</total_tokens><tool_uses>${record.toolUses}</tool_uses>${ctxXml}${compactXml}<duration_ms>${durationMs}</duration_ms></usage>`,
     `</task-notification>`,
@@ -263,7 +263,7 @@ function buildNotificationDetails(record: AgentRecord, resultMaxLen: number, act
       ? record.result.length > resultMaxLen
         ? record.result.slice(0, resultMaxLen) + "…"
         : record.result
-      : "No output.",
+      : record.error ?? "No output.",
   };
 }
 
@@ -427,6 +427,8 @@ export default function (pi: ExtensionAPI) {
       result: record.result,
       error: record.error,
       status: record.status,
+      terminalStopReason: record.terminalStopReason,
+      terminalErrorMessage: record.terminalErrorMessage,
       toolUses: record.toolUses,
       durationMs,
       tokens,
@@ -448,6 +450,7 @@ export default function (pi: ExtensionAPI) {
     pi.appendEntry("subagents:record", {
       id: record.id, type: record.type, description: record.description,
       status: record.status, result: record.result, error: record.error,
+      terminalStopReason: record.terminalStopReason, terminalErrorMessage: record.terminalErrorMessage,
       startedAt: record.startedAt, completedAt: record.completedAt,
     });
 
@@ -1017,7 +1020,7 @@ Terse command-style prompts produce shallow, generic work.
       if (details.status === "error") {
         line += "\n" + theme.fg("error", `  ⎿  Error: ${details.error ?? "unknown"}`);
       } else {
-        line += "\n" + theme.fg("warning", "  ⎿  Aborted (max turns exceeded)");
+        line += "\n" + theme.fg("warning", `  ⎿  ${details.error ? `Aborted: ${details.error}` : "Aborted (max turns exceeded)"}`);
       }
 
       return new Text(line, 0, 0);
@@ -1372,15 +1375,19 @@ Terse command-style prompts produce shallow, generic work.
         : "";
 
       if (record.status === "error") {
-        return textResult(`${fallbackNote}Agent failed: ${record.error}`, details);
+        const resultText = record.result?.trim();
+        return textResult(
+          `${fallbackNote}Agent failed: ${record.error ?? "unknown"}${resultText ? `\n\nPartial output:\n${resultText}` : ""}`,
+          details,
+        );
       }
 
       const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
       const statsParts = [`${record.toolUses} tool uses`];
       if (tokenText) statsParts.push(tokenText);
       return textResult(
-        `${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status)}.\n\n` +
-        (record.result?.trim() || "No output."),
+        `${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.error)}.\n\n` +
+        (record.result?.trim() || record.error?.trim() || "No output."),
         details,
       );
     },
@@ -1446,13 +1453,17 @@ Terse command-style prompts produce shallow, generic work.
 
       let output =
         `Agent: ${record.id}\n` +
-        `Type: ${displayName} | Status: ${record.status}${getStatusNote(record.status)} | ${statsParts.join(" | ")}\n` +
+        `Type: ${displayName} | Status: ${record.status}${getStatusNote(record.status, record.error)} | ${statsParts.join(" | ")}\n` +
         `Description: ${record.description}\n\n`;
 
       if (record.status === "running") {
         output += "Agent is still running. Use wait: true or check back later.";
       } else if (record.status === "error") {
-        output += `Error: ${record.error}`;
+        output += `Error: ${record.error ?? "unknown"}`;
+        if (record.result?.trim()) output += `\n\nPartial output:\n${record.result.trim()}`;
+      } else if (record.status === "aborted" && record.error?.trim()) {
+        output += `Aborted: ${record.error.trim()}`;
+        if (record.result?.trim()) output += `\n\nPartial output:\n${record.result.trim()}`;
       } else {
         output += record.result?.trim() || "No output.";
       }

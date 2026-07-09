@@ -11,7 +11,7 @@ import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { type RunResult, resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
 import type { AgentInvocation, AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
 import { addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees, } from "./worktree.js";
@@ -23,6 +23,20 @@ export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; toke
 
 /** Default max concurrent background agents. */
 const DEFAULT_MAX_CONCURRENT = 4;
+
+type TerminalFailure = { status: "aborted" | "error"; diagnostic: string };
+
+function getTerminalFailure(result: RunResult): TerminalFailure | undefined {
+  if (result.terminalStopReason !== "aborted" && result.terminalStopReason !== "error") return undefined;
+  const message = result.terminalErrorMessage?.trim();
+  const diagnostic = message
+    ? `Final assistant turn ended with stopReason "${result.terminalStopReason}": ${message}`
+    : `Final assistant turn ended with stopReason "${result.terminalStopReason}" before producing final output.`;
+  return {
+    status: result.terminalStopReason === "aborted" ? "aborted" : "error",
+    diagnostic,
+  };
+}
 
 /**
  * Validate a caller-supplied SpawnOptions.cwd. `undefined`/`null` mean "unset"
@@ -287,13 +301,18 @@ export class AgentManager {
         options.onSessionCreated?.(session);
       },
     })
-      .then(({ responseText, session, aborted, steered }) => {
+      .then((result) => {
+        const { responseText, session, aborted, steered } = result;
+        const terminalFailure = aborted ? undefined : getTerminalFailure(result);
         // Don't overwrite status if externally stopped via abort()
         if (record.status !== "stopped") {
-          record.status = aborted ? "aborted" : steered ? "steered" : "completed";
+          record.status = aborted ? "aborted" : terminalFailure?.status ?? (steered ? "steered" : "completed");
+          record.error = terminalFailure?.diagnostic;
         }
         record.result = responseText;
         record.session = session;
+        record.terminalStopReason = result.terminalStopReason;
+        record.terminalErrorMessage = result.terminalErrorMessage;
         record.completedAt ??= Date.now();
 
         detach();

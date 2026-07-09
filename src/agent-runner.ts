@@ -4,7 +4,7 @@
 
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
-import type { Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, StopReason } from "@earendil-works/pi-ai";
 import type { ExtensionContext, LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
 import {
   type AgentSession,
@@ -247,6 +247,12 @@ export interface RunResult {
   aborted: boolean;
   /** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
   steered: boolean;
+  /** Stop reason from the final assistant message, when pi surfaced one. */
+  terminalStopReason?: StopReason;
+  /** Error message from the final assistant message, when pi surfaced one. */
+  terminalErrorMessage?: string;
+  /** Text content on the final assistant message before any history fallback. */
+  finalAssistantText?: string;
 }
 
 /**
@@ -275,6 +281,18 @@ function getLastAssistantText(session: AgentSession): string {
     if (text) return text;
   }
   return "";
+}
+
+function getLastAssistantMessage(session: AgentSession): AssistantMessage | undefined {
+  for (let i = session.messages.length - 1; i >= 0; i--) {
+    const msg = session.messages[i];
+    if (msg.role === "assistant") return msg as AssistantMessage;
+  }
+  return undefined;
+}
+
+function getAssistantText(message: AssistantMessage | undefined): string {
+  return message && Array.isArray(message.content) ? extractText(message.content).trim() : "";
 }
 
 /**
@@ -612,6 +630,7 @@ export async function runAgent(
   let aborted = false;
 
   let currentMessageText = "";
+  let finalAssistantMessage: AssistantMessage | undefined;
   const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
     if (event.type === "turn_end") {
       turnCount++;
@@ -640,6 +659,7 @@ export async function runAgent(
       options.onToolActivity?.({ type: "end", toolName: event.toolName });
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
+      finalAssistantMessage = event.message as AssistantMessage;
       const u = (event.message as any).usage;
       if (u) options.onAssistantUsage?.({
         input: u.input ?? 0,
@@ -672,8 +692,18 @@ export async function runAgent(
     cleanupAbort();
   }
 
-  const responseText = collector.getText().trim() || getLastAssistantText(session);
-  return { responseText, session, aborted, steered: softLimitReached };
+  finalAssistantMessage ??= getLastAssistantMessage(session);
+  const finalAssistantText = getAssistantText(finalAssistantMessage);
+  const responseText = collector.getText().trim() || finalAssistantText || getLastAssistantText(session);
+  return {
+    responseText,
+    session,
+    aborted,
+    steered: softLimitReached,
+    terminalStopReason: finalAssistantMessage?.stopReason,
+    terminalErrorMessage: finalAssistantMessage?.errorMessage,
+    finalAssistantText,
+  };
 }
 
 /**

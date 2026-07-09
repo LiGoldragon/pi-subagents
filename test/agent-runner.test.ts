@@ -170,6 +170,30 @@ describe("agent-runner final output capture", () => {
     expect(result.responseText).toBe("LOCKED");
   });
 
+  it("returns terminal metadata from an empty aborted final assistant message", async () => {
+    const { session, listeners } = createSession("");
+    createAgentSession.mockResolvedValue({ session });
+    session.prompt = vi.fn(async () => {
+      const finalMessage = {
+        role: "assistant",
+        content: [],
+        stopReason: "aborted",
+        errorMessage: "Request was aborted",
+      };
+      for (const listener of listeners) {
+        listener({ type: "message_end", message: finalMessage });
+      }
+      session.messages.push(finalMessage);
+    });
+
+    const result = await runAgent(ctx, "Explore", "go", { pi });
+
+    expect(result.responseText).toBe("");
+    expect(result.finalAssistantText).toBe("");
+    expect(result.terminalStopReason).toBe("aborted");
+    expect(result.terminalErrorMessage).toBe("Request was aborted");
+  });
+
   it("binds extensions before prompting", async () => {
     const { session } = createSession("BOUND");
     createAgentSession.mockResolvedValue({ session });

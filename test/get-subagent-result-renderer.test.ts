@@ -134,4 +134,58 @@ describe("get_subagent_result renderer", () => {
     expect(expanded).toContain("THE-LONG-SUBAGENT-RESULT");
     expect(expanded).toContain("second line that should stay hidden while collapsed");
   });
+
+  it("reports an empty aborted final assistant turn as aborted with a diagnostic, not completed with no output", async () => {
+    vi.mocked(runAgent).mockImplementation(async (_ctx, _type, _prompt, opts: any) => {
+      for (let i = 1; i <= 25; i++) {
+        opts.onTurnEnd?.(i);
+        opts.onToolActivity?.({ type: "start", toolName: "read" });
+        opts.onToolActivity?.({ type: "end", toolName: "read" });
+      }
+      opts.onAssistantUsage?.({ input: 500_000, output: 10_000, cacheWrite: 1_400 });
+      return {
+        responseText: "",
+        session: { dispose: vi.fn() } as any,
+        aborted: false,
+        steered: false,
+        terminalStopReason: "aborted",
+        terminalErrorMessage: "Request was aborted",
+        finalAssistantText: "",
+      };
+    });
+
+    const { pi, tools } = makePi();
+    subagentsExtension(pi);
+
+    const spawn = await tools.get("Agent").execute(
+      "tc-spawn-aborted",
+      { prompt: "go", description: "Investigate no output", subagent_type: "general-purpose", run_in_background: true },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const id = textOf(spawn).match(/Agent ID: (\S+)/)?.[1];
+    expect(id, "background spawn should surface an agent id").toBeTruthy();
+    await flush();
+
+    const result = await tools.get("get_subagent_result").execute(
+      "tc-read-aborted",
+      { agent_id: id },
+      undefined,
+      undefined,
+      ctx(),
+    );
+
+    const output = textOf(result);
+    expect(output).toContain("Status: aborted");
+    expect(output).toContain("Final assistant turn ended with stopReason \"aborted\": Request was aborted");
+    expect(output).toContain("Tool uses: 25");
+    expect(output).not.toContain("Status: completed");
+    expect(output).not.toContain("No output.");
+
+    const collapsed = renderText(tools.get("get_subagent_result").renderResult(result, { expanded: false }, theme));
+    expect(collapsed).toContain("Aborted:");
+    expect(collapsed).toContain("Request was aborted");
+    expect(collapsed).toContain("Investigate no output");
+  });
 });
