@@ -27,11 +27,13 @@ const DEFAULT_MAX_CONCURRENT = 4;
 type TerminalFailure = { status: "aborted" | "error"; diagnostic: string };
 
 function getTerminalFailure(result: RunResult): TerminalFailure | undefined {
-  if (result.terminalStopReason !== "aborted" && result.terminalStopReason !== "error") return undefined;
+  if (result.terminalStopReason !== "aborted" && result.terminalStopReason !== "error" && result.responseText.trim()) return undefined;
   const message = result.terminalErrorMessage?.trim();
-  const diagnostic = message
+  const diagnostic = message && result.terminalStopReason
     ? `Final assistant turn ended with stopReason "${result.terminalStopReason}": ${message}`
-    : `Final assistant turn ended with stopReason "${result.terminalStopReason}" before producing final output.`;
+    : result.terminalStopReason
+      ? `Final assistant turn ended with stopReason "${result.terminalStopReason}" without producing final output.`
+      : "Subagent ended without final assistant output or terminal stop metadata.";
   return {
     status: result.terminalStopReason === "aborted" ? "aborted" : "error",
     diagnostic,

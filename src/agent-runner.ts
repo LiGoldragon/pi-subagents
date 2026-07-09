@@ -630,7 +630,7 @@ export async function runAgent(
   let aborted = false;
 
   let currentMessageText = "";
-  let finalAssistantMessage: AssistantMessage | undefined;
+  let finalAssistantMessageFromEvent: AssistantMessage | undefined;
   const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
     if (event.type === "turn_end") {
       turnCount++;
@@ -659,7 +659,7 @@ export async function runAgent(
       options.onToolActivity?.({ type: "end", toolName: event.toolName });
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
-      finalAssistantMessage = event.message as AssistantMessage;
+      finalAssistantMessageFromEvent = event.message as AssistantMessage;
       const u = (event.message as any).usage;
       if (u) options.onAssistantUsage?.({
         input: u.input ?? 0,
@@ -692,7 +692,7 @@ export async function runAgent(
     cleanupAbort();
   }
 
-  finalAssistantMessage ??= getLastAssistantMessage(session);
+  const finalAssistantMessage = getLastAssistantMessage(session) ?? finalAssistantMessageFromEvent;
   const finalAssistantText = getAssistantText(finalAssistantMessage);
   const responseText = collector.getText().trim() || finalAssistantText || getLastAssistantText(session);
   return {

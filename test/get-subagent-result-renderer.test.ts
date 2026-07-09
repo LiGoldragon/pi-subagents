@@ -57,6 +57,7 @@ const flush = async () => {
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 };
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function spawnCompletedBackgroundAgent(tools: Map<string, any>): Promise<string> {
   vi.mocked(runAgent).mockResolvedValue({
@@ -94,7 +95,7 @@ describe("get_subagent_result renderer", () => {
     process.env.HOME = agentDir;
     previousCwd = process.cwd();
     mkdirSync(join(tmpDir, ".pi"), { recursive: true });
-    writeFileSync(join(tmpDir, ".pi", "subagents.json"), JSON.stringify({ schedulingEnabled: false }));
+    writeFileSync(join(tmpDir, ".pi", "subagents.json"), JSON.stringify({ schedulingEnabled: false, defaultJoinMode: "async" }));
     process.chdir(tmpDir);
   });
 
@@ -187,5 +188,68 @@ describe("get_subagent_result renderer", () => {
     expect(collapsed).toContain("Aborted:");
     expect(collapsed).toContain("Request was aborted");
     expect(collapsed).toContain("Investigate no output");
+  });
+
+  it("reports an empty terminal toolUse result through notifications and get_subagent_result as an error", async () => {
+    vi.mocked(runAgent).mockImplementation(async (_ctx, _type, _prompt, opts: any) => {
+      opts.onTurnEnd?.(138);
+      opts.onAssistantUsage?.({ input: 300_000, output: 9_000, cacheWrite: 500 });
+      return {
+        responseText: "",
+        session: { dispose: vi.fn() } as any,
+        aborted: false,
+        steered: false,
+        terminalStopReason: "toolUse",
+        finalAssistantText: "",
+      };
+    });
+
+    const { pi, tools } = makePi();
+    subagentsExtension(pi);
+
+    const spawn = await tools.get("Agent").execute(
+      "tc-spawn-empty-tooluse",
+      { prompt: "go", description: "Remove legacy resolver", subagent_type: "general-purpose", run_in_background: true },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const id = textOf(spawn).match(/Agent ID: (\S+)/)?.[1];
+    expect(id, "background spawn should surface an agent id").toBeTruthy();
+    await flush();
+    await sleep(250);
+
+    expect(pi.events.emit).toHaveBeenCalledWith(
+      "subagents:failed",
+      expect.objectContaining({
+        id,
+        status: "error",
+        terminalStopReason: "toolUse",
+        error: expect.stringContaining("without producing final output"),
+      }),
+    );
+    const notification = vi.mocked(pi.sendMessage).mock.calls.at(-1)?.[0] as any;
+    expect(notification?.details).toMatchObject({
+      id,
+      description: "Remove legacy resolver",
+      status: "error",
+    });
+    expect(notification?.content).toContain("<status>Error:");
+    expect(notification?.content).not.toContain("<status>Done</status>");
+    expect(notification?.content).not.toContain("<result>No output.</result>");
+
+    const result = await tools.get("get_subagent_result").execute(
+      "tc-read-empty-tooluse",
+      { agent_id: id },
+      undefined,
+      undefined,
+      ctx(),
+    );
+
+    const output = textOf(result);
+    expect(output).toContain("Status: error");
+    expect(output).toContain("Final assistant turn ended with stopReason \"toolUse\" without producing final output.");
+    expect(output).not.toContain("Status: completed");
+    expect(output).not.toContain("No output.");
   });
 });

@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **`get_subagent_result` now renders compactly in the main chat.** The tool still returns the complete background-agent result text to the model, including verbose conversation output when requested, but Pi's collapsed tool view now shows only a status summary and expands through the normal tool-result disclosure to reveal the full payload.
 
+### Fixed
+- **Empty terminal subagent turns no longer report as completed with `No output`.** A subagent whose actual tail assistant message is empty and aborted/error/non-final is now classified as `aborted` or `error`, even if an earlier streamed `message_end` still looked like a `toolUse` turn. The completion notification, lifecycle event, and `get_subagent_result` all surface the diagnostic instead of rendering a successful empty result.
+
 ## [0.13.0] - 2026-06-30
 
 ### Added

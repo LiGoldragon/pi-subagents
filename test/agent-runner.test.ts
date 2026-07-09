@@ -194,6 +194,35 @@ describe("agent-runner final output capture", () => {
     expect(result.terminalErrorMessage).toBe("Request was aborted");
   });
 
+  it("prefers the session tail over earlier message_end metadata when the terminal assistant turn aborts empty", async () => {
+    const { session, listeners } = createSession("");
+    createAgentSession.mockResolvedValue({ session });
+    session.prompt = vi.fn(async () => {
+      const toolUseMessage = {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: {} }],
+        stopReason: "toolUse",
+      };
+      for (const listener of listeners) {
+        listener({ type: "message_end", message: toolUseMessage });
+      }
+      session.messages.push(toolUseMessage);
+      session.messages.push({
+        role: "assistant",
+        content: [],
+        stopReason: "aborted",
+        errorMessage: "Request was aborted",
+      });
+    });
+
+    const result = await runAgent(ctx, "Explore", "go", { pi });
+
+    expect(result.responseText).toBe("");
+    expect(result.finalAssistantText).toBe("");
+    expect(result.terminalStopReason).toBe("aborted");
+    expect(result.terminalErrorMessage).toBe("Request was aborted");
+  });
+
   it("binds extensions before prompting", async () => {
     const { session } = createSession("BOUND");
     createAgentSession.mockResolvedValue({ session });
