@@ -71,6 +71,8 @@ const flush = async () => {
 async function spawnCompletedBackgroundAgent(tools: Map<string, any>): Promise<string> {
   vi.mocked(runAgent).mockResolvedValue({
     responseText: "THE-RESULT-PAYLOAD",
+    finalAssistantText: "THE-RESULT-PAYLOAD",
+    status: "completed",
     session: { dispose: vi.fn() } as any,
     aborted: false,
     steered: false,

@@ -2,7 +2,7 @@
  * types.ts — Type definitions for the subagent system.
  */
 
-import type { ThinkingLevel } from "@earendil-works/pi-ai";
+import type { StopReason, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { LifetimeUsage } from "./usage.js";
 
@@ -10,6 +10,23 @@ export type { ThinkingLevel };
 
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string;
+
+export type AgentTerminalStatus = "completed" | "steered" | "aborted" | "error";
+
+export interface AgentTerminalResult {
+  /** Text displayed to callers; may use a safe final-history fallback. */
+  responseText: string;
+  /** Text content on the final assistant message before any history fallback. */
+  finalAssistantText: string;
+  /** Classified terminal status for every run/resume path. */
+  status: AgentTerminalStatus;
+  /** Diagnostic for non-successful terminal states. */
+  diagnostic?: string;
+  /** Stop reason from the final assistant message, when pi surfaced one. */
+  terminalStopReason?: StopReason;
+  /** Error message from the final assistant message, when pi surfaced one. */
+  terminalErrorMessage?: string;
+}
 
 /** Names of the three embedded default agents. */
 export const DEFAULT_AGENT_NAMES = ["general-purpose", "Explore", "Plan"] as const;
@@ -90,7 +107,7 @@ export interface AgentRecord {
   completedAt?: number;
   session?: AgentSession;
   abortController?: AbortController;
-  promise?: Promise<string>;
+  promise?: Promise<AgentTerminalResult>;
   groupId?: string;
   joinMode?: JoinMode;
   /** Set when result was already consumed via get_subagent_result — suppresses completion notification. */

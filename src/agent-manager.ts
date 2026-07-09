@@ -11,8 +11,8 @@ import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type RunResult, resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
-import type { AgentInvocation, AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
+import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import type { AgentInvocation, AgentRecord, AgentTerminalResult, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
 import { addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees, } from "./worktree.js";
 
@@ -23,22 +23,6 @@ export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; toke
 
 /** Default max concurrent background agents. */
 const DEFAULT_MAX_CONCURRENT = 4;
-
-type TerminalFailure = { status: "aborted" | "error"; diagnostic: string };
-
-function getTerminalFailure(result: RunResult): TerminalFailure | undefined {
-  if (result.terminalStopReason !== "aborted" && result.terminalStopReason !== "error" && result.responseText.trim()) return undefined;
-  const message = result.terminalErrorMessage?.trim();
-  const diagnostic = message && result.terminalStopReason
-    ? `Final assistant turn ended with stopReason "${result.terminalStopReason}": ${message}`
-    : result.terminalStopReason
-      ? `Final assistant turn ended with stopReason "${result.terminalStopReason}" without producing final output.`
-      : "Subagent ended without final assistant output or terminal stop metadata.";
-  return {
-    status: result.terminalStopReason === "aborted" ? "aborted" : "error",
-    diagnostic,
-  };
-}
 
 /**
  * Validate a caller-supplied SpawnOptions.cwd. `undefined`/`null` mean "unset"
@@ -153,6 +137,14 @@ export class AgentManager {
 
   getMaxConcurrent(): number {
     return this.maxConcurrent;
+  }
+
+  private applyTerminalResult(record: AgentRecord, result: AgentTerminalResult): void {
+    record.status = result.status;
+    record.result = result.responseText;
+    record.error = result.diagnostic;
+    record.terminalStopReason = result.terminalStopReason;
+    record.terminalErrorMessage = result.terminalErrorMessage;
   }
 
   /**
@@ -304,17 +296,16 @@ export class AgentManager {
       },
     })
       .then((result) => {
-        const { responseText, session, aborted, steered } = result;
-        const terminalFailure = aborted ? undefined : getTerminalFailure(result);
         // Don't overwrite status if externally stopped via abort()
         if (record.status !== "stopped") {
-          record.status = aborted ? "aborted" : terminalFailure?.status ?? (steered ? "steered" : "completed");
-          record.error = terminalFailure?.diagnostic;
+          this.applyTerminalResult(record, result);
+        } else {
+          record.result = result.responseText;
+          record.error = result.diagnostic;
+          record.terminalStopReason = result.terminalStopReason;
+          record.terminalErrorMessage = result.terminalErrorMessage;
         }
-        record.result = responseText;
-        record.session = session;
-        record.terminalStopReason = result.terminalStopReason;
-        record.terminalErrorMessage = result.terminalErrorMessage;
+        record.session = result.session;
         record.completedAt ??= Date.now();
 
         detach();
@@ -348,14 +339,17 @@ export class AgentManager {
           try { this.onComplete?.(record); } catch { /* ignore completion side-effect errors */ }
           this.drainQueue();
         }
-        return responseText;
+        return result;
       })
       .catch((err) => {
+        const diagnostic = err instanceof Error ? err.message : String(err);
         // Don't overwrite status if externally stopped via abort()
         if (record.status !== "stopped") {
           record.status = "error";
+          record.error = diagnostic;
+        } else {
+          record.error = diagnostic;
         }
-        record.error = err instanceof Error ? err.message : String(err);
         record.completedAt ??= Date.now();
 
         detach();
@@ -384,7 +378,12 @@ export class AgentManager {
           this.onComplete?.(record);
           this.drainQueue();
         }
-        return "";
+        return {
+          responseText: "",
+          finalAssistantText: "",
+          status: "error",
+          diagnostic,
+        } satisfies AgentTerminalResult;
       });
 
     record.promise = promise;
@@ -468,7 +467,7 @@ export class AgentManager {
     record.error = undefined;
 
     try {
-      const responseText = await resumeAgent(record.session, prompt, {
+      const terminalResult = await resumeAgent(record.session, prompt, {
         onToolActivity: (activity) => {
           if (activity.type === "end") record.toolUses++;
         },
@@ -481,8 +480,7 @@ export class AgentManager {
         },
         signal,
       });
-      record.status = "completed";
-      record.result = responseText;
+      this.applyTerminalResult(record, terminalResult);
       record.completedAt = Date.now();
     } catch (err) {
       record.status = "error";

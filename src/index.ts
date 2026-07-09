@@ -1385,6 +1385,20 @@ Terse command-style prompts produce shallow, generic work.
       const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
       const statsParts = [`${record.toolUses} tool uses`];
       if (tokenText) statsParts.push(tokenText);
+      if (record.status === "aborted") {
+        return textResult(
+          `${fallbackNote}Agent aborted in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.error)}.\n\n` +
+          (record.result?.trim() || record.error?.trim() || "No output."),
+          details,
+        );
+      }
+      if (record.status === "stopped") {
+        return textResult(
+          `${fallbackNote}Agent stopped in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.error)}.\n\n` +
+          (record.result?.trim() || record.error?.trim() || "No output."),
+          details,
+        );
+      }
       return textResult(
         `${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.error)}.\n\n` +
         (record.result?.trim() || record.error?.trim() || "No output."),

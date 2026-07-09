@@ -62,6 +62,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function spawnCompletedBackgroundAgent(tools: Map<string, any>): Promise<string> {
   vi.mocked(runAgent).mockResolvedValue({
     responseText: "THE-LONG-SUBAGENT-RESULT\nsecond line that should stay hidden while collapsed",
+    finalAssistantText: "THE-LONG-SUBAGENT-RESULT\nsecond line that should stay hidden while collapsed",
+    status: "completed",
     session: { dispose: vi.fn() } as any,
     aborted: false,
     steered: false,
@@ -146,6 +148,8 @@ describe("get_subagent_result renderer", () => {
       opts.onAssistantUsage?.({ input: 500_000, output: 10_000, cacheWrite: 1_400 });
       return {
         responseText: "",
+        status: "aborted",
+        diagnostic: 'Final assistant turn ended with stopReason "aborted": Request was aborted',
         session: { dispose: vi.fn() } as any,
         aborted: false,
         steered: false,
@@ -196,6 +200,8 @@ describe("get_subagent_result renderer", () => {
       opts.onAssistantUsage?.({ input: 300_000, output: 9_000, cacheWrite: 500 });
       return {
         responseText: "",
+        status: "error",
+        diagnostic: 'Final assistant turn ended with stopReason "toolUse" without producing final output.',
         session: { dispose: vi.fn() } as any,
         aborted: false,
         steered: false,

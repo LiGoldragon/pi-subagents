@@ -168,6 +168,8 @@ describe("agent-runner final output capture", () => {
     const result = await runAgent(ctx, "Explore", "Say LOCKED", { pi });
 
     expect(result.responseText).toBe("LOCKED");
+    expect(result.finalAssistantText).toBe("LOCKED");
+    expect(result.status).toBe("completed");
   });
 
   it("returns terminal metadata from an empty aborted final assistant message", async () => {
@@ -190,8 +192,91 @@ describe("agent-runner final output capture", () => {
 
     expect(result.responseText).toBe("");
     expect(result.finalAssistantText).toBe("");
+    expect(result.status).toBe("aborted");
+    expect(result.diagnostic).toBe('Final assistant turn ended with stopReason "aborted": Request was aborted');
     expect(result.terminalStopReason).toBe("aborted");
     expect(result.terminalErrorMessage).toBe("Request was aborted");
+  });
+
+  it("classifies an empty error final assistant message as terminal error", async () => {
+    const { session, listeners } = createSession("");
+    createAgentSession.mockResolvedValue({ session });
+    session.prompt = vi.fn(async () => {
+      const finalMessage = {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "model failed",
+      };
+      for (const listener of listeners) {
+        listener({ type: "message_end", message: finalMessage });
+      }
+      session.messages.push(finalMessage);
+    });
+
+    const result = await runAgent(ctx, "Explore", "go", { pi });
+
+    expect(result.responseText).toBe("");
+    expect(result.finalAssistantText).toBe("");
+    expect(result.status).toBe("error");
+    expect(result.diagnostic).toBe('Final assistant turn ended with stopReason "error": model failed');
+    expect(result.terminalStopReason).toBe("error");
+  });
+
+  it("does not let earlier assistant text mask an empty final assistant with missing stop metadata", async () => {
+    const { session, listeners } = createSession("");
+    createAgentSession.mockResolvedValue({ session });
+    session.prompt = vi.fn(async () => {
+      session.messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: "earlier useful text" }],
+        stopReason: "stop",
+      });
+      const finalMessage = {
+        role: "assistant",
+        content: [],
+      };
+      for (const listener of listeners) {
+        listener({ type: "message_end", message: finalMessage });
+      }
+      session.messages.push(finalMessage);
+    });
+
+    const result = await runAgent(ctx, "Explore", "go", { pi });
+
+    expect(result.responseText).toBe("");
+    expect(result.finalAssistantText).toBe("");
+    expect(result.status).toBe("error");
+    expect(result.diagnostic).toBe("Final assistant turn ended without producing final output or terminal stop metadata.");
+  });
+
+  it("does not let earlier assistant text mask an empty terminal toolUse assistant message", async () => {
+    const { session, listeners } = createSession("");
+    createAgentSession.mockResolvedValue({ session });
+    session.prompt = vi.fn(async () => {
+      session.messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: "earlier useful text" }],
+        stopReason: "stop",
+      });
+      const finalMessage = {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: {} }],
+        stopReason: "toolUse",
+      };
+      for (const listener of listeners) {
+        listener({ type: "message_end", message: finalMessage });
+      }
+      session.messages.push(finalMessage);
+    });
+
+    const result = await runAgent(ctx, "Explore", "go", { pi });
+
+    expect(result.responseText).toBe("");
+    expect(result.finalAssistantText).toBe("");
+    expect(result.status).toBe("error");
+    expect(result.diagnostic).toBe('Final assistant turn ended with stopReason "toolUse" without producing final output.');
+    expect(result.terminalStopReason).toBe("toolUse");
   });
 
   it("prefers the session tail over earlier message_end metadata when the terminal assistant turn aborts empty", async () => {
@@ -219,6 +304,7 @@ describe("agent-runner final output capture", () => {
 
     expect(result.responseText).toBe("");
     expect(result.finalAssistantText).toBe("");
+    expect(result.status).toBe("aborted");
     expect(result.terminalStopReason).toBe("aborted");
     expect(result.terminalErrorMessage).toBe("Request was aborted");
   });
@@ -282,7 +368,35 @@ describe("agent-runner final output capture", () => {
 
     const result = await resumeAgent(session as any, "Continue");
 
-    expect(result).toBe("RESUMED");
+    expect(result.responseText).toBe("RESUMED");
+    expect(result.finalAssistantText).toBe("RESUMED");
+    expect(result.status).toBe("completed");
+  });
+
+  it("resumeAgent classifies an empty terminal final assistant instead of returning prior text", async () => {
+    const { session, listeners } = createSession("");
+    session.messages.push({
+      role: "assistant",
+      content: [{ type: "text", text: "previous run text" }],
+      stopReason: "stop",
+    });
+    session.prompt = vi.fn(async () => {
+      const finalMessage = {
+        role: "assistant",
+        content: [],
+      };
+      for (const listener of listeners) {
+        listener({ type: "message_end", message: finalMessage });
+      }
+      session.messages.push(finalMessage);
+    });
+
+    const result = await resumeAgent(session as any, "Continue");
+
+    expect(result.responseText).toBe("");
+    expect(result.finalAssistantText).toBe("");
+    expect(result.status).toBe("error");
+    expect(result.diagnostic).toBe("Final assistant turn ended without producing final output or terminal stop metadata.");
   });
 
   it("sets the agent name as session name before binding extensions", async () => {

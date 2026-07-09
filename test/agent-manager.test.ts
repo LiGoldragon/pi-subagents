@@ -24,6 +24,8 @@ const mockSession = () => ({ dispose: vi.fn() } as any);
 const resolvedRun = () =>
   vi.mocked(runAgent).mockResolvedValue({
     responseText: "done",
+    finalAssistantText: "done",
+    status: "completed",
     session: mockSession(),
     aborted: false,
     steered: false,
@@ -136,7 +138,7 @@ describe("AgentManager — spawnAndWait onSpawned + foreground output file wirin
       outputFileSeenAtSessionCreated = capturedId
         ? manager.getRecord(capturedId)?.outputFile
         : undefined;
-      return { responseText: "done", session, aborted: false, steered: false };
+      return { responseText: "done", finalAssistantText: "done", status: "completed", session, aborted: false, steered: false };
     });
 
     await manager.spawnAndWait(mockPi, mockCtx, "general-purpose", "test", {
@@ -196,9 +198,78 @@ describe("AgentManager — completion callbacks", () => {
       description: "test",
       isBackground: true,
     });
-    await expect(manager.getRecord(id)!.promise).resolves.toBe("done");
+    await expect(manager.getRecord(id)!.promise).resolves.toMatchObject({
+      responseText: "done",
+      status: "completed",
+    });
 
     expect(manager.getRecord(id)!.status).toBe("completed");
+  });
+});
+
+describe("AgentManager — terminal result classification", () => {
+  let manager: AgentManager;
+
+  afterEach(() => {
+    manager?.dispose();
+  });
+
+  it("stores terminal error status from runAgent instead of fallback response text", async () => {
+    manager = new AgentManager();
+    vi.mocked(runAgent).mockResolvedValue({
+      responseText: "",
+      finalAssistantText: "",
+      status: "error",
+      diagnostic: "Final assistant turn ended without producing final output or terminal stop metadata.",
+      session: mockSession(),
+      aborted: false,
+      steered: false,
+    });
+
+    const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
+      description: "test",
+      isBackground: true,
+    });
+    await manager.getRecord(id)!.promise;
+
+    expect(manager.getRecord(id)!.status).toBe("error");
+    expect(manager.getRecord(id)!.error).toContain("without producing final output");
+    expect(manager.getRecord(id)!.result).toBe("");
+  });
+
+  it("resume() stores terminal result status instead of treating every resolved prompt as completed", async () => {
+    manager = new AgentManager();
+    const session = mockSession();
+    vi.mocked(runAgent).mockResolvedValue({
+      responseText: "first",
+      finalAssistantText: "first",
+      status: "completed",
+      session,
+      aborted: false,
+      steered: false,
+    });
+
+    const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
+      description: "test",
+      isBackground: true,
+    });
+    await manager.getRecord(id)!.promise;
+
+    const { resumeAgent: resumeMock } = await import("../src/agent-runner.js");
+    vi.mocked(resumeMock).mockResolvedValue({
+      responseText: "",
+      finalAssistantText: "",
+      status: "aborted",
+      diagnostic: 'Final assistant turn ended with stopReason "aborted": Request was aborted',
+      terminalStopReason: "aborted",
+      terminalErrorMessage: "Request was aborted",
+    });
+
+    await manager.resume(id, "more");
+
+    expect(manager.getRecord(id)!.status).toBe("aborted");
+    expect(manager.getRecord(id)!.error).toBe('Final assistant turn ended with stopReason "aborted": Request was aborted');
+    expect(manager.getRecord(id)!.terminalStopReason).toBe("aborted");
   });
 });
 
@@ -277,6 +348,8 @@ describe("AgentManager — Bug 3 clearCompleted", () => {
     const sess = { dispose: disposeSpy };
     vi.mocked(runAgent).mockResolvedValue({
       responseText: "done",
+      finalAssistantText: "done",
+      status: "completed",
       session: sess as any,
       aborted: false,
       steered: false,
@@ -396,7 +469,7 @@ describe("AgentManager — lifetime usage + compaction count are eagerly initial
       // Two assistant messages with usage
       opts.onAssistantUsage?.({ input: 100, output: 50, cacheWrite: 10 });
       opts.onAssistantUsage?.({ input: 200, output: 80, cacheWrite: 20 });
-      return { responseText: "done", session: mockSession(), aborted: false, steered: false };
+      return { responseText: "done", finalAssistantText: "done", status: "completed", session: mockSession(), aborted: false, steered: false };
     });
 
     const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
@@ -420,7 +493,7 @@ describe("AgentManager — lifetime usage + compaction count are eagerly initial
       // onCompact should reflect the just-incremented count.
       opts.onCompaction?.({ reason: "threshold", tokensBefore: 12345 });
       opts.onCompaction?.({ reason: "manual", tokensBefore: 22222 });
-      return { responseText: "done", session: mockSession(), aborted: false, steered: false };
+      return { responseText: "done", finalAssistantText: "done", status: "completed", session: mockSession(), aborted: false, steered: false };
     });
 
     manager = new AgentManager(undefined, undefined, undefined, (record, info) => {
@@ -447,6 +520,8 @@ describe("AgentManager — lifetime usage + compaction count are eagerly initial
     const session = { ...mockSession() };
     vi.mocked(runAgent).mockResolvedValue({
       responseText: "first",
+      finalAssistantText: "first",
+      status: "completed",
       session: session as any,
       aborted: false,
       steered: false,
@@ -467,7 +542,11 @@ describe("AgentManager — lifetime usage + compaction count are eagerly initial
     vi.mocked(resumeMock).mockImplementation(async (_session, _prompt, opts: any) => {
       opts.onAssistantUsage?.({ input: 70, output: 30, cacheWrite: 5 });
       opts.onCompaction?.({ reason: "overflow", tokensBefore: 999 });
-      return "second";
+      return {
+        responseText: "second",
+        finalAssistantText: "second",
+        status: "completed",
+      };
     });
 
     await manager.resume(id, "more");
@@ -730,7 +809,7 @@ describe("AgentManager — abort() state machine", () => {
     expect(record.status).toBe("stopped");
 
     // The agent loop ends and the promise settles "normally".
-    resolveRun({ responseText: "partial output", session: mockSession(), aborted: false, steered: false });
+    resolveRun({ responseText: "partial output", finalAssistantText: "partial output", status: "completed", session: mockSession(), aborted: false, steered: false });
     await record.promise;
 
     expect(record.status).toBe("stopped");        // not overwritten to "completed"

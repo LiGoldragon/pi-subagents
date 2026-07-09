@@ -55,6 +55,8 @@ describe("status note reaches the parent through the real handlers", () => {
   it("foreground turn-limit abort → the Agent result flags an incomplete outcome", async () => {
     vi.mocked(runAgent).mockResolvedValue({
       responseText: "partial work so far",
+      finalAssistantText: "partial work so far",
+      status: "aborted",
       session: { dispose: vi.fn() } as any,
       aborted: true, // hard turn-limit abort
       steered: false,
@@ -72,6 +74,34 @@ describe("status note reaches the parent through the real handlers", () => {
     expect(out).toContain("hit the turn limit");      // getStatusNote("aborted") is wired in
     expect(out).toContain("partial work so far");     // partial result still delivered
     expect(out).not.toContain("STOPPED BY THE USER"); // not mislabelled as a user stop
+  });
+
+  it("foreground terminal-aborted result says aborted with the terminal diagnostic", async () => {
+    vi.mocked(runAgent).mockResolvedValue({
+      responseText: "",
+      finalAssistantText: "",
+      status: "aborted",
+      diagnostic: 'Final assistant turn ended with stopReason "aborted": Request was aborted',
+      terminalStopReason: "aborted",
+      terminalErrorMessage: "Request was aborted",
+      session: { dispose: vi.fn() } as any,
+      aborted: false,
+      steered: false,
+    });
+    const { pi, tools } = makePi();
+    subagentsExtension(pi);
+
+    const res = await tools.get("Agent").execute(
+      "tc-terminal-abort",
+      { prompt: "go", description: "d", subagent_type: "general-purpose" },
+      undefined, undefined, ctx(),
+    );
+
+    const out = textOf(res);
+    expect(out).toContain("Agent aborted");
+    expect(out).toContain('Final assistant turn ended with stopReason "aborted": Request was aborted');
+    expect(out).not.toContain("Agent completed");
+    expect(out).not.toContain("No output.");
   });
 
   it("background user-stop → get_subagent_result flags STOPPED BY THE USER (not completed)", async () => {

@@ -111,6 +111,8 @@ describe("FleetView wiring (real extension lifecycle)", () => {
   it("registers the belowEditor widget once a spawned agent has a session, then clears it on shutdown", async () => {
     vi.mocked(runAgent).mockResolvedValue({
       responseText: "done",
+      finalAssistantText: "done",
+      status: "completed",
       session: { dispose: vi.fn() } as any,
       aborted: false,
       steered: false,

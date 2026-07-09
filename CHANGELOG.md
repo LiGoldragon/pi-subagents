@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Empty terminal subagent turns no longer report as completed with `No output`.** A subagent whose actual tail assistant message is empty and aborted/error/non-final is now classified as `aborted` or `error`, even if an earlier streamed `message_end` still looked like a `toolUse` turn. The completion notification, lifecycle event, and `get_subagent_result` all surface the diagnostic instead of rendering a successful empty result.
+- **Terminal subagent status now comes from one typed result across run, resume, notifications, and result retrieval.** `runAgent()` and `resumeAgent()` now return the same terminal result shape: displayed text, final assistant text, final stop reason, terminal error message, status, and diagnostic. `AgentManager` stores that classification directly instead of deriving failure from fallback-enriched response text, so an empty final assistant turn with missing stop metadata or terminal `toolUse` cannot be masked by earlier assistant text and resume can no longer mark every resolved prompt as completed. Foreground Agent output now says `Agent aborted` for terminal-aborted runs and includes the same diagnostic shown by background notifications and `get_subagent_result`.
 
 ## [0.13.0] - 2026-06-30
 

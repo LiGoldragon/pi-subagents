@@ -23,7 +23,7 @@ import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
-import type { SubagentType, ThinkingLevel } from "./types.js";
+import type { AgentTerminalResult, AgentTerminalStatus, SubagentType, ThinkingLevel } from "./types.js";
 
 /**
  * Tool names registered by THIS extension. Single source of truth so the
@@ -240,19 +240,12 @@ export interface RunOptions {
   onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
 }
 
-export interface RunResult {
-  responseText: string;
+export interface RunResult extends AgentTerminalResult {
   session: AgentSession;
   /** True if the agent was hard-aborted (max_turns + grace exceeded). */
   aborted: boolean;
   /** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
   steered: boolean;
-  /** Stop reason from the final assistant message, when pi surfaced one. */
-  terminalStopReason?: StopReason;
-  /** Error message from the final assistant message, when pi surfaced one. */
-  terminalErrorMessage?: string;
-  /** Text content on the final assistant message before any history fallback. */
-  finalAssistantText?: string;
 }
 
 /**
@@ -273,8 +266,8 @@ function collectResponseText(session: AgentSession) {
 }
 
 /** Get the last assistant text from the completed session history. */
-function getLastAssistantText(session: AgentSession): string {
-  for (let i = session.messages.length - 1; i >= 0; i--) {
+function getLastAssistantText(session: AgentSession, startIndex = 0): string {
+  for (let i = session.messages.length - 1; i >= startIndex; i--) {
     const msg = session.messages[i];
     if (msg.role !== "assistant") continue;
     const text = extractText(msg.content).trim();
@@ -283,8 +276,8 @@ function getLastAssistantText(session: AgentSession): string {
   return "";
 }
 
-function getLastAssistantMessage(session: AgentSession): AssistantMessage | undefined {
-  for (let i = session.messages.length - 1; i >= 0; i--) {
+function getLastAssistantMessage(session: AgentSession, startIndex = 0): AssistantMessage | undefined {
+  for (let i = session.messages.length - 1; i >= startIndex; i--) {
     const msg = session.messages[i];
     if (msg.role === "assistant") return msg as AssistantMessage;
   }
@@ -293,6 +286,81 @@ function getLastAssistantMessage(session: AgentSession): AssistantMessage | unde
 
 function getAssistantText(message: AssistantMessage | undefined): string {
   return message && Array.isArray(message.content) ? extractText(message.content).trim() : "";
+}
+
+function terminalDiagnostic(stopReason: StopReason | undefined, errorMessage: string | undefined, finalAssistantText: string): string {
+  const message = errorMessage?.trim();
+  if (message && stopReason) {
+    return `Final assistant turn ended with stopReason "${stopReason}": ${message}`;
+  }
+  if (stopReason === "toolUse" && finalAssistantText.trim()) {
+    return `Final assistant turn ended with stopReason "${stopReason}" before producing a final answer.`;
+  }
+  if (stopReason) {
+    return `Final assistant turn ended with stopReason "${stopReason}" without producing final output.`;
+  }
+  return "Final assistant turn ended without producing final output or terminal stop metadata.";
+}
+
+function classifyTerminalResult(
+  finalAssistantText: string,
+  terminalStopReason: StopReason | undefined,
+  terminalErrorMessage: string | undefined,
+  hardAborted: boolean,
+  steered: boolean,
+): { status: AgentTerminalStatus; diagnostic?: string } {
+  if (hardAborted) return { status: "aborted" };
+  if (terminalStopReason === "aborted") {
+    return {
+      status: "aborted",
+      diagnostic: terminalDiagnostic(terminalStopReason, terminalErrorMessage, finalAssistantText),
+    };
+  }
+  if (terminalStopReason === "error" || terminalStopReason === "toolUse") {
+    return {
+      status: "error",
+      diagnostic: terminalDiagnostic(terminalStopReason, terminalErrorMessage, finalAssistantText),
+    };
+  }
+  if (!finalAssistantText.trim()) {
+    return {
+      status: "error",
+      diagnostic: terminalDiagnostic(terminalStopReason, terminalErrorMessage, finalAssistantText),
+    };
+  }
+  return { status: steered ? "steered" : "completed" };
+}
+
+function buildTerminalResult(
+  session: AgentSession,
+  startIndex: number,
+  streamedText: string,
+  finalAssistantMessageFromEvent: AssistantMessage | undefined,
+  hardAborted: boolean,
+  steered: boolean,
+): AgentTerminalResult {
+  const finalAssistantMessage = getLastAssistantMessage(session, startIndex) ?? finalAssistantMessageFromEvent;
+  const finalAssistantText = finalAssistantMessage
+    ? getAssistantText(finalAssistantMessage)
+    : streamedText.trim();
+  const classification = classifyTerminalResult(
+    finalAssistantText,
+    finalAssistantMessage?.stopReason,
+    finalAssistantMessage?.errorMessage,
+    hardAborted,
+    steered,
+  );
+  const fallbackText = classification.status === "completed" || classification.status === "steered"
+    ? getLastAssistantText(session, startIndex)
+    : "";
+  return {
+    responseText: finalAssistantText || fallbackText,
+    finalAssistantText,
+    status: classification.status,
+    diagnostic: classification.diagnostic,
+    terminalStopReason: finalAssistantMessage?.stopReason,
+    terminalErrorMessage: finalAssistantMessage?.errorMessage,
+  };
 }
 
 /**
@@ -692,17 +760,19 @@ export async function runAgent(
     cleanupAbort();
   }
 
-  const finalAssistantMessage = getLastAssistantMessage(session) ?? finalAssistantMessageFromEvent;
-  const finalAssistantText = getAssistantText(finalAssistantMessage);
-  const responseText = collector.getText().trim() || finalAssistantText || getLastAssistantText(session);
+  const terminalResult = buildTerminalResult(
+    session,
+    0,
+    collector.getText(),
+    finalAssistantMessageFromEvent,
+    aborted,
+    softLimitReached,
+  );
   return {
-    responseText,
+    ...terminalResult,
     session,
     aborted,
     steered: softLimitReached,
-    terminalStopReason: finalAssistantMessage?.stopReason,
-    terminalErrorMessage: finalAssistantMessage?.errorMessage,
-    finalAssistantText,
   };
 }
 
@@ -718,27 +788,28 @@ export async function resumeAgent(
     onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
     signal?: AbortSignal;
   } = {},
-): Promise<string> {
+): Promise<AgentTerminalResult> {
+  const startIndex = session.messages.length;
   const collector = collectResponseText(session);
   const cleanupAbort = forwardAbortSignal(session, options.signal);
+  let finalAssistantMessageFromEvent: AssistantMessage | undefined;
 
-  const unsubEvents = (options.onToolActivity || options.onAssistantUsage || options.onCompaction)
-    ? session.subscribe((event: AgentSessionEvent) => {
-        if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName });
-        if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName });
-        if (event.type === "message_end" && event.message.role === "assistant") {
-          const u = (event.message as any).usage;
-          if (u) options.onAssistantUsage?.({
-            input: u.input ?? 0,
-            output: u.output ?? 0,
-            cacheWrite: u.cacheWrite ?? 0,
-          });
-        }
-        if (event.type === "compaction_end" && !event.aborted && event.result) {
-          options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
-        }
-      })
-    : () => {};
+  const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
+    if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName });
+    if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName });
+    if (event.type === "message_end" && event.message.role === "assistant") {
+      finalAssistantMessageFromEvent = event.message as AssistantMessage;
+      const u = (event.message as any).usage;
+      if (u) options.onAssistantUsage?.({
+        input: u.input ?? 0,
+        output: u.output ?? 0,
+        cacheWrite: u.cacheWrite ?? 0,
+      });
+    }
+    if (event.type === "compaction_end" && !event.aborted && event.result) {
+      options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
+    }
+  });
 
   try {
     await session.prompt(prompt);
@@ -748,7 +819,14 @@ export async function resumeAgent(
     cleanupAbort();
   }
 
-  return collector.getText().trim() || getLastAssistantText(session);
+  return buildTerminalResult(
+    session,
+    startIndex,
+    collector.getText(),
+    finalAssistantMessageFromEvent,
+    false,
+    false,
+  );
 }
 
 /**
