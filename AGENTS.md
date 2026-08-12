@@ -99,3 +99,10 @@ Before a release:
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
+
+## Protos estate status
+
+Protos estate scope: out of scope
+Stack: not applicable
+Role: agent tool
+This is scope metadata, not a stack.
